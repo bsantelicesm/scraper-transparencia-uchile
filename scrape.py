@@ -17,7 +17,8 @@ print("Scraper HTML-SQL Transparencia UChile")
 dictMeses = {"Enero":"01", "Febrero":"02", "Marzo":"03", "Abril":"04", "Mayo":"05", "Junio":"06", "Julio":"07", "Agosto":"08", "Septiembre":"09", "Octubre":"10", "Noviembre":"11", "Diciembre":"12"} #Para pasar de nombres de meses a números
 
 urlPlanta = "https://uchile.cl/presentacion/informacion-publica/dotacion-de-personal/personal-de-planta"
-urlContrata = "https://uchile.cl/presentacion/informacion-publica/dotacion-de-personal/personal-a-contrata" #URL de páginas de planta y contrata
+urlContrata = "https://uchile.cl/presentacion/informacion-publica/dotacion-de-personal/personal-a-contrata"
+urlHonorarios = "https://uchile.cl/presentacion/informacion-publica/dotacion-de-personal/dotacion-a-honorarios" #URL de páginas de planta y contrata
 
 def scrapeTransparencia(url): #Paso 1: entra a las URL de transparencia y obtiene las URL para todos los meses
     print("Scraping meses en", url)
@@ -32,7 +33,7 @@ def scrapeTransparencia(url): #Paso 1: entra a las URL de transparencia y obtien
 
     return paginas
 
-def scrapeLetras(paginas): #Paso 3: para cada mes, se obtienen los enlaces para todas las letras de apellidos.
+def scrapeLetras(paginas): #Paso 2: para cada mes, se obtienen los enlaces para todas las letras de apellidos.
     links = []
     links += paginas #el enlace orginal contiene la tabla AB, por lo que se pueden agregar inmediatamente
     for link in paginas:
@@ -47,7 +48,7 @@ def scrapeLetras(paginas): #Paso 3: para cada mes, se obtienen los enlaces para 
                 links.append(line[primeraComilla + 1:segundaComilla]) #mismo approach para levantar la URL que en el paso 2
     return links
 
-def scrapeTablas(links): #Paso 4: levantar las tablas y ordenarlas como lista
+def scrapeTablas(links): #Paso 3: levantar las tablas y ordenarlas como lista
     tablasRotas = [] #todas las listas separadas, se consolidarán por fecha más tarde.
     for link in links:
         tablaData = []
@@ -60,8 +61,9 @@ def scrapeTablas(links): #Paso 4: levantar las tablas y ordenarlas como lista
                 h1.append(line)
         for headers in h1:
             if "Dotación" in headers: #buscar la palabra "Dotación" en el header para encontrar la línea con la fecha
-                fechaRAW = headers.split("-")[1].replace(" ", "").replace("</h1>", "").split("20"), #separar por guiones eliminar espacios y tagas, y separar con el 20- del año
-                #BUG: las tablas del 2020 quedan de la forma "_10" en vez de "20_10" por el split, no lo he arreglado aún porque no es tan difícil de arreglar a mano.
+                fechaRAW = headers.split("-")[1].replace(" ", "").replace("</h1>", "").split("20") #separar por guiones eliminar espacios y tagas, y separar con el 20- del año
+                if fechaRAW[1].startswith("_"):
+                    fechaRAW[1] = "20" + fechaRAW[1] #forma re turbia de atrapar que el split se come el año 2020.
                 fecha = fechaRAW[1]+"_"+dictMeses[fechaRAW[0]] #convertir la fecha bruta de la forma "Agosto2021" a forma numerica de tabla "20_08"
 
         tabla = fuente.find_all("tr") #encontrar los elementos de la tabla
@@ -76,7 +78,7 @@ def scrapeTablas(links): #Paso 4: levantar las tablas y ordenarlas como lista
 
     return tablasRotas
 
-def consolidarFechas(tablas): #Paso 5: unir todas las tablas que tengan la misma fecha
+def consolidarFechas(tablas): #Paso 4: unir todas las tablas que tengan la misma fecha
     dictTablas = {}
     for tabla in tablas:
         if tabla[0] in dictTablas.keys(): #busca si la fecha es llave en el diccionario, si no lo es agrega la tabla vacia como una nueva entrada, si no, le hace append al final de la ya existente.
@@ -85,11 +87,16 @@ def consolidarFechas(tablas): #Paso 5: unir todas las tablas que tengan la misma
             dictTablas[tabla[0]] = tabla[1]
     return(dictTablas)
 
-def cargarSQL(sql, dictTablas): #Paso 6 cargar tablas a la base SQL
+def cargarSQL(sql, dictTablas, toggleHonorarios): #Paso 5: cargar tablas a la base SQL
     cur = sql.cursor()
     for mes in dictTablas:
         print("Creando tabla", mes)
-        cur.execute(f"create table {mes} (id int NOT NULL AUTO_INCREMENT , contrato varchar(255), estamento varchar(255), apellido_paterno varchar(255), apellido_materno varchar(255), nombres varchar(255), grado int, calificacion varchar(255), cargo varchar(255), region varchar(255), A_asignaciones int, moneda varchar(255), B_remuneracion int, C_extdiurnas  int, D_extnocturnas int, inicio varchar(255), termino varchar(255), unidad int, PRIMARY KEY (id));") #crear tabla. IMPORTANTE: la tabla no debe existir de antemano.
+        createCmd = ""
+        if toggleHonorarios:
+            createCmd = f"create table H{mes} (id int NOT NULL AUTO INCREMENT, apellido_paterno varchar(255), apellido_materno varchar(255), nombres varchar(255), funcion varchar(255), calificacion varchar(255), grado varchar(255), region varchar(255), moneda varchar(255), honorario int, mensual varchar(255), cuotas int, inicio varchar(255), termino varchar(255), unidad int, PRIMARY KEY(id));" #variante para honorarios, las tablas son distintas asi que reciben otra tabulación.
+        else:
+            createCmd = f"create table {mes} (id int NOT NULL AUTO_INCREMENT , contrato varchar(255), estamento varchar(255), apellido_paterno varchar(255), apellido_materno varchar(255), nombres varchar(255), grado int, calificacion varchar(255), cargo varchar(255), region varchar(255), A_asignaciones int, moneda varchar(255), B_remuneracion int, C_extdiurnas  int, D_extnocturnas int, inicio varchar(255), termino varchar(255), unidad int, PRIMARY KEY (id));"
+        cur.execute(createCmd) #crear tabla. IMPORTANTE: la tabla no debe existir de antemano.
         print("Cargando datos a", mes)
         for dataRow in dictTablas[mes]: #cargar datos con una instrucción por fila. Los datos siempre están en el mismo lugar, por lo que se referencia la lista estáticamente.
             try:
@@ -98,19 +105,26 @@ def cargarSQL(sql, dictTablas): #Paso 6 cargar tablas a la base SQL
                 print(mes, dataRow) #si el dato tiene un error, no lo sube y lo imprime. Me salen datos vacíos a veces, o datos con valores inválidos.
         sql.commit() #commit al SQL, la tabla no se sube si falla antes de llegar acá.
 
-print("Obteniendo enlaces mensuales desde el portal de transparencia...")
+
+print("\n---ENLACES MENSUALES---")
 planta = scrapeTransparencia(urlPlanta)
 contrata = scrapeTransparencia(urlContrata)
+honorarios = scrapeTransparencia(urlHonorarios)
+
 meses = [*planta, *contrata] #tabla de enlaces de planta y conrata.
-print("Obteniendo enlaces de todas las letras para cada mes...")
+print("\n---ENLACES POR LETRA---")
 links = scrapeLetras(meses)
+linksHonorarios = scrapeLetras(honorarios)
 
 print("Extrayendo tablas")
 tablasRAW = scrapeTablas(links)
+tablasRAWHonorarios = scrapeTablas(linksHonorarios)
 tablasOrdenadas = consolidarFechas(tablasRAW)
+tablasOrdenadasHonorarios = consolidarFechas(tablasRAW)
 
-SQL = mysql.connector.connect(host="SERVER", user="benjamin", passwd="pass", db="fcfm_transparencia") #conector SQL
+SQL = mysql.connector.connect(host="SERVER", user="benjamin", passwd="completos", db="fcfm_transparencia") #conector SQL
 
-cargarSQL(SQL, tablasOrdenadas)
+cargarSQL(SQL, tablasOrdenadas, False)
+cargarSQL(SQL, tablasOrdenadasHonorarios, True)
 
 print("Time! completado en", time.time() - start) #tiempo de ejecución. En mi caso tomó aprox. 73 minutos.

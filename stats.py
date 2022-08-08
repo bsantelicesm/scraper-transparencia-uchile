@@ -18,7 +18,7 @@ listaTablas = cur.fetchall()
 
 def dotaciones_beauchef_total(): #tabla de dotación mensual total
     for tabla in listaTablas:
-        cur.execute(f"select contrato, count(*) from {tabla[0]} where unidad = 1211 group by contrato;")
+        cur.execute(f"select contrato, count(*) from {tabla[0]} where unidad = 1206 group by contrato;")
         data = cur.fetchall()
         planta = data[0][1] #cantidad planta
         contrata = data[1][1] #cantidad contrata
